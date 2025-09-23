@@ -1,71 +1,67 @@
 import os
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-from openai import OpenAI
+from flask_cors import CORS  # Android から直接叩けるように
+import requests
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 app = Flask(__name__)
-CORS(app)  # Android からのクロスオリジン呼び出しを許可
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# 必要に応じて Origin を絞ってください（開発中は "*" でOK）
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def root():
     return "SmartMeeting Server is running!"
 
-@app.route("/healthz")
+@app.route("/healthz", methods=["GET"])
 def healthz():
-    return jsonify({"status": "ok"})
+    # OPENAI_API_KEY が設定されているかも簡易チェック
+    return jsonify({
+        "status": "ok",
+        "has_api_key": bool(OPENAI_API_KEY)
+    })
 
-# ---------- ChatGPT: テキスト→返答 ----------
 @app.route("/chat", methods=["POST"])
 def chat():
+    """
+    リクエスト:  { "message": "こんにちは" }
+    レスポンス: { "reply": "..." }
+    """
     try:
+        if not OPENAI_API_KEY:
+            return jsonify({"error": "OPENAI_API_KEY is not set"}), 500
+
         data = request.get_json(silent=True) or {}
-        user_message = (data.get("message") or "").strip()
-        system_prompt = data.get("system", "You are a helpful assistant.")
-        model = data.get("model", "gpt-4o-mini")
+        user_msg = (data.get("message") or "").strip()
+        if not user_msg:
+            return jsonify({"error": "message is required"}), 400
 
-        if not user_message:
-            return jsonify({"error": "No 'message' provided"}), 400
-
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
+        # --- OpenAI Chat Completions（REST） ---
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "gpt-4o-mini",  # 適宜変更可
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant for a meeting app."},
+                {"role": "user",   "content": user_msg}
             ],
-        )
-        reply = resp.choices[0].message.content
-        return jsonify({"reply": reply, "model": model})
+            "temperature": 0.7,
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        if r.status_code != 200:
+            return jsonify({"error": "OpenAI API error", "detail": r.text}), 502
+
+        j = r.json()
+        reply = j["choices"][0]["message"]["content"].strip()
+        return jsonify({"reply": reply})
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ---------- Whisper: 音声→文字起こし ----------
-# multipart/form-data で 'audio' フィールドに音声ファイルを付けて送ってください
-@app.route("/transcribe", methods=["POST"])
-def transcribe():
-    try:
-        if "audio" not in request.files:
-            return jsonify({"error": "No file field 'audio' found"}), 400
-
-        audio_file = request.files["audio"]
-        if audio_file.filename == "":
-            return jsonify({"error": "Empty filename"}), 400
-
-        # Whisper (英語/多言語)
-        # 'language' を指定したい場合は form-data で渡せます（例: ja, en）
-        language = request.form.get("language")
-        kwargs = {"model": "whisper-1", "file": audio_file}
-        if language:
-            kwargs["language"] = language
-
-        result = client.audio.transcriptions.create(**kwargs)
-        # SDK 1.x は result.text に文字起こし結果
-        return jsonify({"text": result.text})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "server error", "detail": str(e)}), 500
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # Render で受けるため 0.0.0.0 固定
     app.run(host="0.0.0.0", port=port)
