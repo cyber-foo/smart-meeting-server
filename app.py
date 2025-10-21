@@ -103,3 +103,22 @@ def chat():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+@app.route("/test-db")
+def test_db():
+    try:
+        from sqlalchemy import create_engine, text
+        import os
+
+        # 環境変数からDB URLを取得
+        db_url = os.getenv("DATABASE_URL")
+        engine = create_engine(db_url)
+
+        # テストクエリを実行
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 'Database connected successfully!'"))
+            message = result.scalar()
+
+        return {"status": "success", "message": message}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
